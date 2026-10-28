@@ -5,6 +5,8 @@
 
 The study uses a state-year panel (564 observations, 1992–2015) from the public **U.S. Education Datasets: Unification Project**. Linear models are developed in sequence, and diagnostics and corrections are treated as part of the analysis rather than an afterthought.
 
+📄 **Full report (29 pages):** [reports/education_finance_naep_report.pdf](reports/education_finance_naep_report.pdf)
+
 **Stack:** R · `lm` with year fixed effects · sandwich / lmtest (HC1 robust SEs) · car (VIF) · ggplot2 · modelsummary
 
 ---
@@ -47,6 +49,7 @@ The study uses a state-year panel (564 observations, 1992–2015) from the publi
 ```
 ├── analysis.Rmd     # full analysis: preparation → descriptives → base model → diagnostics → corrected & interaction models
 ├── figures/         # figures from the final report
+├── reports/         # final report (PDF)
 └── data/            # place states_all.csv here
 ```
 
