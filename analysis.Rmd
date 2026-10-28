@@ -1,0 +1,162 @@
+---
+title: "State Education Finance and Student Achievement (NAEP, 1992–2015)"
+output: github_document
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+library(dplyr); library(tidyr); library(readr); library(janitor)
+library(ggplot2); library(lmtest); library(sandwich); library(car); library(modelsummary)
+```
+
+## Data preparation
+
+```{r}
+df_raw <- readr::read_csv("data/states_all.csv") %>%
+  clean_names()
+df <- df_raw %>%
+  mutate(
+    naep_composite = rowMeans(
+      cbind(avg_math_4_score, avg_math_8_score, avg_reading_4_score, avg_reading_8_score),
+      na.rm = TRUE
+    ),
+    # Per-pupil instructional spending
+    instr_pp = instruction_expenditure / grades_all_g,
+    # Log-transform spending to reduce skew
+    log_instr_pp = log(instr_pp),
+    # Federal revenue share
+    fed_share = federal_revenue / total_revenue
+  ) %>%
+  filter(!is.na(naep_composite)) %>%
+  filter(
+    is.finite(log_instr_pp),
+    is.finite(fed_share),
+    instr_pp > 0,
+    fed_share >= 0, fed_share <= 1
+  ) %>%
+  filter(year >= 1992, year <= 2015)
+model_df <- df %>%
+  select(state, year, naep_composite, log_instr_pp, fed_share) %>%
+  drop_na()
+nrow(model_df)
+```
+
+## Descriptive statistics
+
+```{r}
+desc_tbl <- model_df %>%
+  pivot_longer(cols = c(naep_composite, log_instr_pp, fed_share),
+               names_to = "variable", values_to = "value") %>%
+  group_by(variable) %>%
+  summarise(
+    N = sum(!is.na(value)),
+    mean = mean(value, na.rm = TRUE),
+    sd   = sd(value, na.rm = TRUE),
+    min  = min(value, na.rm = TRUE),
+    max  = max(value, na.rm = TRUE),
+    .groups = "drop"
+  )
+desc_tbl
+# outcome distribution
+hist(model_df$naep_composite, breaks = 30, main = "NAEP composite", xlab = "Score")
+# spending per pupil distribution (raw vs log)
+hist(df$instr_pp, breaks = 30, main = "Instructional $ per pupil (raw)", xlab = "instr_pp")
+hist(model_df$log_instr_pp, breaks = 30, main = "log(instr_pp)", xlab = "log_instr_pp")
+# federal share
+hist(model_df$fed_share, breaks = 30, main = "Federal revenue share", xlab = "fed_share")
+cor_mat <- cor(model_df %>% select(naep_composite, log_instr_pp, fed_share),
+               use = "complete.obs")
+round(cor_mat, 3)
+```
+
+## Base model (year fixed effects, HC1 robust SEs)
+
+```{r}
+m1 <- lm(naep_composite ~ log_instr_pp + fed_share + factor(year), data = model_df)
+summary(m1)
+# Robust SE (HC1)
+coeftest(m1, vcov. = vcovHC(m1, type = "HC1"))
+```
+
+## Assumption diagnostics
+
+```{r}
+p1 <- ggplot(model_df, aes(x = log_instr_pp, y = naep_composite)) +
+  geom_point(alpha = 0.5) +
+  theme_classic() +
+  geom_smooth(method = "loess", se = TRUE) +
+  geom_smooth(method = "lm", se = FALSE)
+p1
+p2 <- ggplot(model_df, aes(x = fed_share, y = naep_composite)) +
+  geom_point(alpha = 0.5) +
+  theme_classic() +
+  geom_smooth(method = "loess", se = TRUE) +
+  geom_smooth(method = "lm", se = FALSE)
+p2
+plot_df <- tibble(
+  fitted = fitted(m1),
+  resid  = resid(m1),
+  abs_resid = abs(resid(m1))
+)
+
+ggplot(plot_df, aes(x = fitted, y = resid)) +
+  geom_point(alpha = 0.5) +
+  theme_classic() +
+  geom_smooth(method = "loess", se = TRUE) +
+  geom_smooth(method = "lm", se = FALSE)
+ggplot(plot_df, aes(x = fitted, y = abs_resid)) +
+  geom_point(alpha = 0.5) +
+  theme_classic() +
+  geom_smooth(method = "loess", se = TRUE) +
+  geom_smooth(method = "lm", se = FALSE)
+hist(resid(m1), breaks = 30, main = "Residuals", xlab = "Residual")
+qqnorm(rstandard(m1)); qqline(rstandard(m1))
+```
+
+## Influential observations and corrected model
+
+```{r}
+influence_measures <- tibble(
+  state = model_df$state,
+  year  = model_df$year,
+  cooks_d = cooks.distance(m1),
+  leverage = hatvalues(m1),
+  stud_resid = rstudent(m1)
+) %>%
+  arrange(desc(cooks_d))
+head(influence_measures, 10)
+# Rule-of-thumb flags
+n <- nrow(model_df)
+flagged <- influence_measures %>%
+  filter(cooks_d > (4 / n) | abs(stud_resid) > 3)
+flagged
+if (nrow(flagged) > 0) {
+  model_df2 <- model_df %>%
+    anti_join(flagged %>% select(state, year), by = c("state", "year"))
+} else {
+  model_df2 <- model_df
+}
+m1_corr <- lm(naep_composite ~ log_instr_pp + fed_share + factor(year), data = model_df2)
+AIC(m1, m1_corr)
+summary(m1_corr)
+m1_vif <- lm(naep_composite ~ log_instr_pp + fed_share, data = model_df2)
+vif(m1_vif)
+```
+
+## Moderation: spending × federal share
+
+```{r}
+m2 <- lm(naep_composite ~ log_instr_pp * fed_share + factor(year), data = model_df2)
+summary(m2)
+# Compare base vs interaction (nested F-test)
+anova(m1_corr, m2)
+# AIC comparison
+AIC(m1_corr, m2)
+modelsummary(
+  list(
+    "Base (Year FE)" = m1_corr,
+    "Interaction (Year FE)" = m2
+  ),
+  statistic = "({std.error})",
+  stars = TRUE
+)
+```
